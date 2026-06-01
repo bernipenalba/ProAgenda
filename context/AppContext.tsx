@@ -1,7 +1,6 @@
-import React, { createContext, useContext, useState, ReactNode } from 'react';
+import React, { createContext, useContext, ReactNode } from 'react';
+import { useQueryClient, useQuery, useMutation } from '@tanstack/react-query';
 import {
-  PATIENTS,
-  APPOINTMENTS,
   Patient,
   PatientNote,
   Appointment,
@@ -11,10 +10,28 @@ import {
   PaymentStatus,
   PaymentMethod,
 } from '@/constants/MockData';
-// PatientStatus removed — patients no longer have an activo/inactivo status
-import { getTodayISO, buildDateISO } from '@/constants/dateUtils';
+import { getTodayISO } from '@/constants/dateUtils';
+import { useAuth } from './AuthContext';
+import {
+  fetchPatients,
+  fetchAppointments,
+  insertPatient,
+  updatePatientRow,
+  deletePatientRow,
+  insertNote,
+  updateNoteRow,
+  deleteNoteRow,
+  insertAppointmentWithSession,
+  updateAppointmentRow,
+  cancelAppointmentRow,
+  markSessionsPaidRow,
+  unmarkSessionPaidRow,
+  DBPatient,
+  DBAppointment,
+} from '@/lib/queries';
+import { supabase } from '@/lib/supabase';
 
-// ── input types ────────────────────────────────────────────────────────────────
+// ── input types ───────────────────────────────────────────────────────────────
 
 export interface NewPatientInput {
   name: string;
@@ -33,7 +50,7 @@ export interface NewAppointmentInput {
   amount: string;
 }
 
-// ── helpers ────────────────────────────────────────────────────────────────────
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 const AVATAR_COLORS = [
   '#D8A48F', '#A3A380', '#C4A84A', '#BB8588',
@@ -46,28 +63,11 @@ function getInitials(name: string): string {
   return name.slice(0, 2).toUpperCase();
 }
 
-/**
- * ADEUDA: has unpaid non-cancelled sessions with date strictly before today.
- * PENDIENTE: has unpaid non-cancelled sessions but all are today or future.
- * AL_DÍA: all non-cancelled sessions are paid (or none exist).
- *
- * Uses date comparison, not the stored status field, so that sessions created
- * as 'pendiente' in the future but whose date has now passed are correctly
- * flagged as debt without needing a status update in the data.
- */
 function computePaymentStatus(sessions: Session[]): PaymentStatus {
   const today = getTodayISO();
   const relevant = sessions.filter(s => s.status !== 'cancelada' && !s.paid);
   if (relevant.length === 0) return 'al_dia';
   return relevant.some(s => s.date < today) ? 'adeuda' : 'pendiente';
-}
-
-function getNowISO(): string {
-  const now = new Date();
-  return buildDateISO(now.getFullYear(), now.getMonth() + 1, now.getDate()) +
-    'T' + String(now.getHours()).padStart(2, '0') +
-    ':' + String(now.getMinutes()).padStart(2, '0') + ':' +
-    String(now.getSeconds()).padStart(2, '0');
 }
 
 function computeNextSession(patientId: string, appts: Appointment[]): string | null {
@@ -78,26 +78,76 @@ function computeNextSession(patientId: string, appts: Appointment[]): string | n
   return upcoming.length > 0 ? `${upcoming[0].date}T${upcoming[0].time}:00` : null;
 }
 
-// ── context type ───────────────────────────────────────────────────────────────
+// ── DB → app type adapters ────────────────────────────────────────────────────
+
+function dbPatientToPatient(db: DBPatient, appts: Appointment[]): Patient {
+  const sessions: Session[] = (db.sessions ?? []).map(s => ({
+    id: s.id,
+    date: s.date,
+    status: s.status,
+    amount: s.amount,
+    paid: s.paid,
+    paymentMethod: s.payment_method ?? undefined,
+    appointmentId: s.appointment_id ?? undefined,
+    paidAt: s.paid_at ?? undefined,
+  }));
+
+  const notes: PatientNote[] = (db.patient_notes ?? [])
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .map(n => ({ id: n.id, content: n.content, createdAt: n.created_at }));
+
+  return {
+    id: db.id,
+    name: db.name,
+    initials: db.initials,
+    age: db.age ?? 0,
+    phone: db.phone ?? '',
+    email: db.email ?? '',
+    observations: db.observations ?? '',
+    notes,
+    sessions,
+    paymentStatus: computePaymentStatus(sessions),
+    nextSession: computeNextSession(db.id, appts),
+    avatarColor: db.avatar_color,
+  };
+}
+
+function dbApptToAppointment(db: DBAppointment, patients: Patient[]): Appointment {
+  const patient = patients.find(p => p.id === db.patient_id);
+  return {
+    id: db.id,
+    patientId: db.patient_id,
+    patientName: patient?.name ?? '',
+    patientInitials: patient?.initials ?? '',
+    patientAvatarColor: patient?.avatarColor ?? '#6366F1',
+    date: db.date,
+    time: db.time,
+    duration: db.duration,
+    modality: db.modality,
+    amount: db.amount,
+    paid: db.paid,
+    paymentMethod: db.payment_method ?? undefined,
+    sessionId: db.session_id ?? undefined,
+  };
+}
+
+// ── context type ──────────────────────────────────────────────────────────────
 
 interface AppContextType {
   patients: Patient[];
   appointments: Appointment[];
-  // patients
+  isLoading: boolean;
   addPatient: (data: NewPatientInput) => void;
   updatePatient: (id: string, data: Partial<Patient>) => void;
   deletePatient: (id: string) => void;
-  // notes
   addNote: (patientId: string, content: string) => void;
   updateNote: (patientId: string, noteId: string, content: string) => void;
   deleteNote: (patientId: string, noteId: string) => void;
-  // appointments
   addAppointment: (data: NewAppointmentInput) => void;
   updateAppointment: (id: string, data: Partial<Appointment>) => void;
   cancelAppointment: (id: string) => void;
   markAppointmentPaid: (id: string, method: PaymentMethod) => void;
   unmarkAppointmentPaid: (id: string) => void;
-  // sessions — markSessionsPaid handles any number of sessions atomically
   markSessionsPaid: (patientId: string, sessionIds: string[], method: PaymentMethod) => void;
   markSessionPaid: (patientId: string, sessionId: string, method: PaymentMethod) => void;
   unmarkSessionPaid: (patientId: string, sessionId: string) => void;
@@ -108,297 +158,205 @@ const AppContext = createContext<AppContextType | null>(null);
 // ── provider ──────────────────────────────────────────────────────────────────
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  // Lazy initializer: recompute paymentStatus and nextSession from real data on every fresh load.
-  const [patients, setPatients] = useState<Patient[]>(() =>
-    PATIENTS.map(p => ({
-      ...p,
-      paymentStatus: computePaymentStatus(p.sessions),
-      nextSession: computeNextSession(p.id, APPOINTMENTS),
-    }))
-  );
-  const [appointments, setAppointments] = useState<Appointment[]>(APPOINTMENTS);
+  const { user } = useAuth();
+  const qc = useQueryClient();
 
-  // ── patient operations ──
+  const { data: dbPatients = [], isLoading: loadingPatients } = useQuery({
+    queryKey: ['patients', user?.id],
+    queryFn: fetchPatients,
+    enabled: !!user,
+  });
 
-  function addPatient(data: NewPatientInput) {
-    const colorIdx = patients.length % AVATAR_COLORS.length;
-    const newPatient: Patient = {
-      id: Date.now().toString(),
-      name: data.name.trim(),
-      initials: getInitials(data.name),
-      age: parseInt(data.age) || 0,
-      phone: data.phone.trim(),
-      email: data.email.trim(),
-      observations: data.observations.trim(),
-      notes: [],
-      paymentStatus: 'al_dia',
-      nextSession: null,
-      avatarColor: AVATAR_COLORS[colorIdx],
-      sessions: [],
-    };
-    setPatients(prev => [...prev, newPatient]);
-  }
+  const { data: dbAppointments = [], isLoading: loadingAppts } = useQuery({
+    queryKey: ['appointments', user?.id],
+    queryFn: fetchAppointments,
+    enabled: !!user,
+  });
 
-  function updatePatient(id: string, data: Partial<Patient>) {
-    setPatients(prev => prev.map(p => {
-      if (p.id !== id) return p;
-      const updated = { ...p, ...data };
-      if (data.name) updated.initials = getInitials(data.name);
-      return updated;
-    }));
-    if (data.name) {
-      const initials = getInitials(data.name);
-      setAppointments(prev => prev.map(a =>
-        a.patientId === id
-          ? { ...a, patientName: data.name!, patientInitials: initials }
-          : a
-      ));
-    }
-  }
+  // Build app-layer objects from DB rows (two-pass to resolve cross-references)
+  const rawPatients: Patient[] = dbPatients.map(p => dbPatientToPatient(p, []));
+  const appointments: Appointment[] = dbAppointments.map(a => dbApptToAppointment(a, rawPatients));
+  const patients: Patient[] = dbPatients.map(p => dbPatientToPatient(p, appointments));
 
-  function deletePatient(id: string) {
-    setPatients(prev => prev.filter(p => p.id !== id));
-    setAppointments(prev => prev.filter(a => a.patientId !== id));
-  }
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['patients', user?.id] });
+    qc.invalidateQueries({ queryKey: ['appointments', user?.id] });
+  };
 
-  // ── note operations ──
+  // ── patient mutations ──
 
-  function addNote(patientId: string, content: string) {
-    const now = new Date();
-    const createdAt =
-      buildDateISO(now.getFullYear(), now.getMonth() + 1, now.getDate()) +
-      'T' + String(now.getHours()).padStart(2, '0') +
-      ':' + String(now.getMinutes()).padStart(2, '0') + ':00';
-    const newNote: PatientNote = { id: 'note_' + Date.now().toString(), content, createdAt };
-    setPatients(prev => prev.map(p =>
-      p.id === patientId ? { ...p, notes: [newNote, ...p.notes] } : p
-    ));
-  }
+  const addPatientMut = useMutation({
+    mutationFn: (data: NewPatientInput) => {
+      const age = parseInt(data.age, 10);
+      if (isNaN(age) || age < 0 || age > 150) throw new Error('Edad inválida');
+      const colorIdx = dbPatients.length % AVATAR_COLORS.length;
+      return insertPatient(user!.id, {
+        name: data.name.trim(),
+        initials: getInitials(data.name),
+        age,
+        phone: data.phone.trim(),
+        email: data.email.trim(),
+        observations: data.observations.trim(),
+        avatar_color: AVATAR_COLORS[colorIdx],
+      });
+    },
+    onSuccess: invalidate,
+  });
 
-  function updateNote(patientId: string, noteId: string, content: string) {
-    setPatients(prev => prev.map(p => {
-      if (p.id !== patientId) return p;
-      return { ...p, notes: p.notes.map(n => n.id === noteId ? { ...n, content } : n) };
-    }));
-  }
+  const updatePatientMut = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Partial<Patient> }) => {
+      const fields: Parameters<typeof updatePatientRow>[1] = {};
+      if (data.name !== undefined) { fields.name = data.name; fields.initials = getInitials(data.name); }
+      if (data.age !== undefined) fields.age = data.age;
+      if (data.phone !== undefined) fields.phone = data.phone;
+      if (data.email !== undefined) fields.email = data.email;
+      if (data.observations !== undefined) fields.observations = data.observations;
+      return updatePatientRow(id, fields);
+    },
+    onSuccess: invalidate,
+  });
 
-  function deleteNote(patientId: string, noteId: string) {
-    setPatients(prev => prev.map(p => {
-      if (p.id !== patientId) return p;
-      return { ...p, notes: p.notes.filter(n => n.id !== noteId) };
-    }));
-  }
+  const deletePatientMut = useMutation({
+    mutationFn: deletePatientRow,
+    onSuccess: invalidate,
+  });
 
-  // ── appointment operations ──
+  // ── note mutations ──
 
-  function addAppointment(data: NewAppointmentInput) {
-    const patient = patients.find(p => p.id === data.patientId);
-    if (!patient) return;
+  const addNoteMut = useMutation({
+    mutationFn: ({ patientId, content }: { patientId: string; content: string }) =>
+      insertNote(user!.id, patientId, content),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['patients', user?.id] }),
+  });
 
-    const today = getTodayISO();
-    const ts = Date.now().toString();
-    const apptId = 'a' + ts;
-    const sessionId = 'ses_' + ts;
+  const updateNoteMut = useMutation({
+    mutationFn: ({ noteId, content }: { noteId: string; content: string }) =>
+      updateNoteRow(noteId, content),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['patients', user?.id] }),
+  });
 
-    const sessionStatus: SessionStatus = data.date < today ? 'realizada' : 'pendiente';
+  const deleteNoteMut = useMutation({
+    mutationFn: deleteNoteRow,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['patients', user?.id] }),
+  });
 
-    const newSession: Session = {
-      id: sessionId,
-      date: data.date,
-      status: sessionStatus,
-      amount: parseInt(data.amount) || 0,
-      paid: false,
-      appointmentId: apptId,
-    };
+  // ── appointment mutations ──
 
-    const newAppt: Appointment = {
-      id: apptId,
-      patientId: patient.id,
-      patientName: patient.name,
-      patientInitials: patient.initials,
-      patientAvatarColor: patient.avatarColor,
-      date: data.date,
-      time: data.time,
-      duration: parseInt(data.duration) || 50,
-      modality: data.modality,
-      amount: parseInt(data.amount) || 0,
-      paid: false,
-      sessionId,
-    };
+  const addAppointmentMut = useMutation({
+    mutationFn: (data: NewAppointmentInput) => {
+      const duration = parseInt(data.duration, 10);
+      if (isNaN(duration) || duration < 1 || duration > 480) throw new Error('Duración inválida');
+      const amount = parseInt(data.amount, 10);
+      if (isNaN(amount) || amount < 0) throw new Error('Monto inválido');
+      const today = getTodayISO();
+      const sessionStatus: SessionStatus = data.date < today ? 'realizada' : 'pendiente';
+      return insertAppointmentWithSession(user!.id, {
+        patientId: data.patientId,
+        date: data.date,
+        time: data.time,
+        duration,
+        modality: data.modality,
+        amount,
+        sessionStatus,
+      });
+    },
+    onSuccess: invalidate,
+  });
 
-    const updatedAppts = [...appointments, newAppt];
-    setAppointments(updatedAppts);
+  const updateAppointmentMut = useMutation({
+    mutationFn: async ({ id, data }: { id: string; data: Partial<Appointment> }) => {
+      const appt = appointments.find(a => a.id === id);
+      const apptFields: Parameters<typeof updateAppointmentRow>[1] = {};
+      if (data.date !== undefined) apptFields.date = data.date;
+      if (data.time !== undefined) apptFields.time = data.time;
+      if (data.duration !== undefined) apptFields.duration = data.duration;
+      if (data.modality !== undefined) apptFields.modality = data.modality;
+      if (data.amount !== undefined) apptFields.amount = data.amount;
+      await updateAppointmentRow(id, apptFields);
 
-    setPatients(prev => prev.map(p => {
-      if (p.id !== patient.id) return p;
-      const sessions = [...p.sessions, newSession];
-      return {
-        ...p,
-        sessions,
-        paymentStatus: computePaymentStatus(sessions),
-        nextSession: computeNextSession(p.id, updatedAppts),
-      };
-    }));
-  }
+      if (appt?.sessionId && (data.amount !== undefined || data.date !== undefined)) {
+        const sesFields: Record<string, unknown> = {};
+        if (data.amount !== undefined) sesFields.amount = data.amount;
+        if (data.date !== undefined) sesFields.date = data.date;
+        const { error } = await supabase.from('sessions').update(sesFields).eq('id', appt.sessionId);
+        if (error) throw error;
+      }
+    },
+    onSuccess: invalidate,
+  });
 
-  function updateAppointment(id: string, data: Partial<Appointment>) {
-    const appt = appointments.find(a => a.id === id);
-    setAppointments(prev => prev.map(a => a.id === id ? { ...a, ...data } : a));
+  const cancelAppointmentMut = useMutation({
+    mutationFn: (id: string) => {
+      const appt = appointments.find(a => a.id === id);
+      return cancelAppointmentRow(id, appt?.sessionId ?? null);
+    },
+    onSuccess: invalidate,
+  });
 
-    if (appt?.sessionId && (data.amount !== undefined || data.date !== undefined)) {
-      setPatients(prev => prev.map(p => {
-        if (p.id !== appt.patientId) return p;
-        const sessions = p.sessions.map(s => {
-          if (s.id !== appt.sessionId) return s;
-          const updates: Partial<Session> = {};
-          if (data.amount !== undefined) updates.amount = data.amount;
-          if (data.date !== undefined) updates.date = data.date;
-          return { ...s, ...updates };
-        });
-        return { ...p, sessions };
-      }));
-    }
-  }
+  const markSessionsPaidMut = useMutation({
+    mutationFn: ({ patientId, sessionIds, method }: {
+      patientId: string; sessionIds: string[]; method: PaymentMethod;
+    }) => {
+      const patient = patients.find(p => p.id === patientId);
+      const apptIds = sessionIds
+        .map(sid => patient?.sessions.find(s => s.id === sid)?.appointmentId)
+        .filter(Boolean) as string[];
+      return markSessionsPaidRow(sessionIds, apptIds, method);
+    },
+    onSuccess: invalidate,
+  });
 
-  function cancelAppointment(id: string) {
-    const appt = appointments.find(a => a.id === id);
-    const updatedAppts = appointments.filter(a => a.id !== id);
-    setAppointments(updatedAppts);
+  const unmarkSessionPaidMut = useMutation({
+    mutationFn: ({ patientId, sessionId }: { patientId: string; sessionId: string }) => {
+      const patient = patients.find(p => p.id === patientId);
+      const session = patient?.sessions.find(s => s.id === sessionId);
+      return unmarkSessionPaidRow(sessionId, session?.appointmentId ?? null);
+    },
+    onSuccess: invalidate,
+  });
 
-    if (appt) {
-      setPatients(prev => prev.map(p => {
-        if (p.id !== appt.patientId) return p;
-        const sessions = appt.sessionId
-          ? p.sessions.map(s =>
-              s.id === appt.sessionId ? { ...s, status: 'cancelada' as SessionStatus } : s
-            )
-          : p.sessions;
-        return {
-          ...p,
-          sessions,
-          paymentStatus: computePaymentStatus(sessions),
-          nextSession: computeNextSession(p.id, updatedAppts),
-        };
-      }));
-    }
-  }
+  const markAppointmentPaidMut = useMutation({
+    mutationFn: async ({ id, method }: { id: string; method: PaymentMethod }) => {
+      const appt = appointments.find(a => a.id === id);
+      await updateAppointmentRow(id, { paid: true, payment_method: method });
+      if (appt?.sessionId) await markSessionsPaidRow([appt.sessionId], [], method);
+    },
+    onSuccess: invalidate,
+  });
 
-  function markAppointmentPaid(id: string, method: PaymentMethod) {
-    const appt = appointments.find(a => a.id === id);
-    const paidAt = getNowISO();
-    setAppointments(prev => prev.map(a =>
-      a.id === id ? { ...a, paid: true, paymentMethod: method } : a
-    ));
+  const unmarkAppointmentPaidMut = useMutation({
+    mutationFn: async (id: string) => {
+      const appt = appointments.find(a => a.id === id);
+      await updateAppointmentRow(id, { paid: false, payment_method: null });
+      if (appt?.sessionId) await unmarkSessionPaidRow(appt.sessionId, null);
+    },
+    onSuccess: invalidate,
+  });
 
-    if (appt?.sessionId) {
-      setPatients(prev => prev.map(p => {
-        if (p.id !== appt.patientId) return p;
-        const sessions = p.sessions.map(s =>
-          s.id === appt.sessionId
-            ? { ...s, paid: true, paymentMethod: method, status: 'realizada' as SessionStatus, paidAt }
-            : s
-        );
-        return { ...p, sessions, paymentStatus: computePaymentStatus(sessions) };
-      }));
-    }
-  }
+  const value: AppContextType = {
+    patients,
+    appointments,
+    isLoading: loadingPatients || loadingAppts,
+    addPatient: (data) => addPatientMut.mutate(data),
+    updatePatient: (id, data) => updatePatientMut.mutate({ id, data }),
+    deletePatient: (id) => deletePatientMut.mutate(id),
+    addNote: (patientId, content) => addNoteMut.mutate({ patientId, content }),
+    updateNote: (_patientId, noteId, content) => updateNoteMut.mutate({ noteId, content }),
+    deleteNote: (_patientId, noteId) => deleteNoteMut.mutate(noteId),
+    addAppointment: (data) => addAppointmentMut.mutate(data),
+    updateAppointment: (id, data) => updateAppointmentMut.mutate({ id, data }),
+    cancelAppointment: (id) => cancelAppointmentMut.mutate(id),
+    markAppointmentPaid: (id, method) => markAppointmentPaidMut.mutate({ id, method }),
+    unmarkAppointmentPaid: (id) => unmarkAppointmentPaidMut.mutate(id),
+    markSessionsPaid: (patientId, sessionIds, method) =>
+      markSessionsPaidMut.mutate({ patientId, sessionIds, method }),
+    markSessionPaid: (patientId, sessionId, method) =>
+      markSessionsPaidMut.mutate({ patientId, sessionIds: [sessionId], method }),
+    unmarkSessionPaid: (patientId, sessionId) =>
+      unmarkSessionPaidMut.mutate({ patientId, sessionId }),
+  };
 
-  function unmarkAppointmentPaid(id: string) {
-    const appt = appointments.find(a => a.id === id);
-    setAppointments(prev => prev.map(a =>
-      a.id === id ? { ...a, paid: false, paymentMethod: undefined } : a
-    ));
-
-    if (appt?.sessionId) {
-      setPatients(prev => prev.map(p => {
-        if (p.id !== appt.patientId) return p;
-        const sessions = p.sessions.map(s =>
-          s.id === appt.sessionId ? { ...s, paid: false, paymentMethod: undefined } : s
-        );
-        return { ...p, sessions, paymentStatus: computePaymentStatus(sessions) };
-      }));
-    }
-  }
-
-  // Marks any number of sessions paid in a single atomic state update.
-  // This is the preferred function for multi-select payment from PaymentModal.
-  function markSessionsPaid(patientId: string, sessionIds: string[], method: PaymentMethod) {
-    if (sessionIds.length === 0) return;
-    const patient = patients.find(p => p.id === patientId);
-    const paidAt = getNowISO();
-    const idSet = new Set(sessionIds);
-
-    // Collect appointmentIds to sync, reading from the current (pre-update) snapshot.
-    const apptIds = new Set<string>();
-    sessionIds.forEach(sid => {
-      const s = patient?.sessions.find(s => s.id === sid);
-      if (s?.appointmentId) apptIds.add(s.appointmentId);
-    });
-
-    // Single atomic update: all selected sessions marked paid at once.
-    setPatients(prev => prev.map(p => {
-      if (p.id !== patientId) return p;
-      const sessions = p.sessions.map(s =>
-        idSet.has(s.id)
-          ? { ...s, paid: true, paymentMethod: method, status: 'realizada' as SessionStatus, paidAt }
-          : s
-      );
-      return { ...p, sessions, paymentStatus: computePaymentStatus(sessions) };
-    }));
-
-    // Single atomic update for linked appointments.
-    if (apptIds.size > 0) {
-      setAppointments(prev => prev.map(a =>
-        apptIds.has(a.id) ? { ...a, paid: true, paymentMethod: method } : a
-      ));
-    }
-  }
-
-  function markSessionPaid(patientId: string, sessionId: string, method: PaymentMethod) {
-    markSessionsPaid(patientId, [sessionId], method);
-  }
-
-  function unmarkSessionPaid(patientId: string, sessionId: string) {
-    const patient = patients.find(p => p.id === patientId);
-    const session = patient?.sessions.find(s => s.id === sessionId);
-
-    setPatients(prev => prev.map(p => {
-      if (p.id !== patientId) return p;
-      const sessions = p.sessions.map(s =>
-        s.id === sessionId ? { ...s, paid: false, paymentMethod: undefined } : s
-      );
-      return { ...p, sessions, paymentStatus: computePaymentStatus(sessions) };
-    }));
-
-    if (session?.appointmentId) {
-      setAppointments(prev => prev.map(a =>
-        a.id === session.appointmentId ? { ...a, paid: false, paymentMethod: undefined } : a
-      ));
-    }
-  }
-
-  return (
-    <AppContext.Provider value={{
-      patients,
-      appointments,
-      addPatient,
-      updatePatient,
-      deletePatient,
-      addNote,
-      updateNote,
-      deleteNote,
-      addAppointment,
-      updateAppointment,
-      cancelAppointment,
-      markAppointmentPaid,
-      unmarkAppointmentPaid,
-      markSessionsPaid,
-      markSessionPaid,
-      unmarkSessionPaid,
-    }}>
-      {children}
-    </AppContext.Provider>
-  );
+  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 
 export function useApp(): AppContextType {

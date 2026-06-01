@@ -41,7 +41,19 @@ Navigation to the patient profile: `router.push('/paciente/PATIENT_ID' as any)`.
 
 ### Data layer
 
-All data originates in `constants/MockData.ts` and is managed through `context/AppContext.tsx`. No API calls, no database.
+Data is stored in **Supabase** (Postgres) and fetched via **React Query** with **AsyncStorage** persistence for offline/cache-first reads. `constants/MockData.ts` still holds the TypeScript types but no longer contains data — it is the type source of truth only.
+
+- `lib/supabase.ts` — Supabase client (uses AsyncStorage for auth session persistence)
+- `lib/queries.ts` — all raw Supabase fetch/insert/update/delete functions
+- `context/AuthContext.tsx` — auth session state; exposes `user`, `session`, `signIn`, `signUp`, `signOut`
+- `context/AppContext.tsx` — wraps React Query `useQuery`/`useMutation` calls; exposes same API as before so all screens are unchanged
+- `app/login.tsx` — login/signup screen; shown automatically when no session exists
+- `supabase_schema.sql` — run once in the Supabase SQL Editor to create tables + RLS policies
+- `.env.local` — `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY` (never commit this file)
+
+**Cache strategy:** React Query `staleTime=5min`, `gcTime=24h`, persisted to AsyncStorage under key `proagenda-cache`. On app open, data renders from cache instantly; background refetch updates it silently.
+
+**RLS:** Every table has `user_id` + a policy `auth.uid() = user_id`. Each user only ever sees their own data.
 
 **Key types in `MockData.ts`:**
 - `Patient` — includes `sessions: Session[]`, `paymentStatus`, `nextSession`, `notes`

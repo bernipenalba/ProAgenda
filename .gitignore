@@ -29,10 +29,17 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
-.env*.local
+# local env files — never commit secrets
+.env
+.env.*
+!.env.example
 
 # typescript
 *.tsbuildinfo
 
 app-example
+
+# development session artifacts — generated during local dev, not part of the project
+expo_output.log
+qr_expo.png
+start-expo.bat

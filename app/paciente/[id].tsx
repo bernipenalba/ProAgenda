@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   View,
   ScrollView,
@@ -21,6 +21,7 @@ import { AppointmentModal } from '@/components/modals/AppointmentModal';
 import { PaymentModal } from '@/components/modals/PaymentModal';
 import { ApptDetailModal } from '@/components/modals/ApptDetailModal';
 import { parseLocalDate, getTodayISO, formatTodayCompact } from '@/constants/dateUtils';
+import { useAuth } from '@/context/AuthContext';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -201,7 +202,13 @@ export default function PatientProfileScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const c = Colors[colorScheme];
   const router = useRouter();
+  const { session, loading: authLoading } = useAuth();
   const { patients, appointments, deletePatient, addNote, updateNote, deleteNote, markSessionPaid, unmarkSessionPaid, cancelAppointment, markAppointmentPaid, unmarkAppointmentPaid } = useApp();
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!session) router.replace('/login' as any);
+  }, [session, authLoading]);
 
   const scrollRef = useRef<ScrollView>(null);
   useFocusEffect(useCallback(() => {
@@ -247,24 +254,24 @@ export default function PatientProfileScreen() {
   function handleDelete() {
     Alert.alert(
       'Eliminar paciente',
-      `¿Seguro que querés eliminar a ${patient.name}? Esta acción no se puede deshacer.`,
+      `¿Seguro que querés eliminar a ${patient!.name}? Esta acción no se puede deshacer.`,
       [
         { text: 'Cancelar', style: 'cancel' },
-        { text: 'Eliminar', style: 'destructive', onPress: () => { deletePatient(patient.id); router.back(); } },
+        { text: 'Eliminar', style: 'destructive', onPress: () => { deletePatient(patient!.id); router.back(); } },
       ]
     );
   }
 
   function handleAddNote() {
     if (!newNoteContent.trim()) return;
-    addNote(patient.id, newNoteContent.trim());
+    addNote(patient!.id, newNoteContent.trim());
     setAddingNote(false);
     setNewNoteContent('');
   }
 
   function handleUpdateNote(noteId: string) {
     if (!editContent.trim()) return;
-    updateNote(patient.id, noteId, editContent.trim());
+    updateNote(patient!.id, noteId, editContent.trim());
     setEditingNoteId(null);
     setEditContent('');
   }
@@ -272,7 +279,7 @@ export default function PatientProfileScreen() {
   function handleDeleteNote(noteId: string) {
     Alert.alert('Eliminar nota', '¿Seguro que querés eliminar esta nota?', [
       { text: 'Cancelar', style: 'cancel' },
-      { text: 'Eliminar', style: 'destructive', onPress: () => deleteNote(patient.id, noteId) },
+      { text: 'Eliminar', style: 'destructive', onPress: () => deleteNote(patient!.id, noteId) },
     ]);
   }
 
@@ -285,10 +292,10 @@ export default function PatientProfileScreen() {
     // Synthetic appointment for sessions not linked to a calendar entry
     setDetailAppt({
       id: session.id,
-      patientId: patient.id,
-      patientName: patient.name,
-      patientInitials: patient.initials,
-      patientAvatarColor: patient.avatarColor,
+      patientId: patient!.id,
+      patientName: patient!.name,
+      patientInitials: patient!.initials,
+      patientAvatarColor: patient!.avatarColor,
       date: session.date,
       time: '',
       duration: 0,

@@ -17,6 +17,7 @@ import { Appointment, AppointmentModality } from '@/constants/MockData';
 import { DatePicker } from '@/components/ui/DatePicker';
 import { TimePicker } from '@/components/ui/TimePicker';
 import { getTodayISO } from '@/constants/dateUtils';
+import { appointmentSchema } from '@/lib/schemas';
 
 interface Props {
   visible: boolean;
@@ -48,6 +49,7 @@ export function AppointmentModal({ visible, onClose, appointment, defaultPatient
   const [modality, setModality] = useState<AppointmentModality>('presencial');
   const [amount, setAmount] = useState('');
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
 
   const selectedPatient = patients.find(p => p.id === patientId);
@@ -70,6 +72,7 @@ export function AppointmentModal({ visible, onClose, appointment, defaultPatient
         setAmount('');
       }
       setError('');
+      setSubmitting(false);
       setShowDropdown(false);
     }
   }, [visible, appointment, defaultPatientId, defaultDate]);
@@ -77,11 +80,15 @@ export function AppointmentModal({ visible, onClose, appointment, defaultPatient
   const canSubmit = !!patientId && !!time && !!amount && !isNaN(parseInt(amount));
 
   function handleSubmit() {
-    if (!patientId) { setError('Seleccioná un paciente'); return; }
-    if (!date) { setError('Seleccioná una fecha'); return; }
-    if (!time) { setError('Seleccioná un horario'); return; }
-    if (!amount || isNaN(parseInt(amount))) { setError('Ingresá el honorario'); return; }
+    if (submitting) return;
 
+    const result = appointmentSchema.safeParse({ patientId, date, time, duration, modality, amount });
+    if (!result.success) {
+      setError(result.error.issues[0]?.message ?? 'Verificá los campos e intentá de nuevo.');
+      return;
+    }
+
+    setSubmitting(true);
     if (isEdit && appointment) {
       updateAppointment(appointment.id, {
         date, time,
@@ -235,11 +242,11 @@ export function AppointmentModal({ visible, onClose, appointment, defaultPatient
             </View>
 
             <TouchableOpacity
-              style={[s.submitBtn, { backgroundColor: canSubmit ? c.accent : c.mutedLight }]}
+              style={[s.submitBtn, { backgroundColor: canSubmit && !submitting ? c.accent : c.mutedLight }]}
               onPress={handleSubmit}
               activeOpacity={0.85}
-              disabled={!canSubmit}>
-              <Text style={[s.submitText, { color: canSubmit ? '#fff' : c.muted }]}>
+              disabled={!canSubmit || submitting}>
+              <Text style={[s.submitText, { color: canSubmit && !submitting ? '#fff' : c.muted }]}>
                 {isEdit ? 'Guardar cambios' : 'Crear turno'}
               </Text>
             </TouchableOpacity>

@@ -14,6 +14,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Colors } from '@/constants/Colors';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import { useApp } from '@/context/AppContext';
+import { UserMenu } from '@/components/UserMenu';
 import { PatientModal } from '@/components/modals/PatientModal';
 import { AppointmentModal } from '@/components/modals/AppointmentModal';
 import { ApptDetailModal } from '@/components/modals/ApptDetailModal';
@@ -148,9 +149,7 @@ export default function DashboardScreen() {
             <Text style={[s.greeting, { color: c.muted }]}>{formatTodayLong()}</Text>
             <Text style={[s.name, { color: c.text }]}>Buen día</Text>
           </View>
-          <View style={[s.avatar, { backgroundColor: c.accentLight }]}>
-            <Text style={[s.avatarText, { color: c.accent }]}>P</Text>
-          </View>
+          <UserMenu />
         </View>
 
         {/* ── income hero card ── */}
@@ -322,8 +321,6 @@ const s = StyleSheet.create({
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 22 },
   greeting: { fontSize: 13, fontWeight: '500', marginBottom: 3 },
   name: { fontSize: 26, fontWeight: '800', letterSpacing: -0.5 },
-  avatar: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
-  avatarText: { fontSize: 18, fontWeight: '800' },
   heroCard: {
     borderRadius: 22, padding: 22, marginBottom: 16,
     shadowColor: '#BB8588', shadowOpacity: 0.22, shadowRadius: 14,

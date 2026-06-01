@@ -339,7 +339,7 @@ export default function FinanzasScreen() {
         {/* ── stats ── */}
         <View style={s.statsRow}>
           <FinStat
-            label="Total pendiente"
+            label="Total adeudado"
             value={formatCurrency(totalDebt)}
             sub={`${debtors.length} paciente${debtors.length !== 1 ? 's' : ''}`}
             accent={c.warning} bg={c.warningLight}
