@@ -13,6 +13,7 @@ import { useColorScheme } from '@/hooks/useColorScheme';
 import { AppProvider } from '@/context/AppContext';
 import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { supabase } from '@/lib/supabase';
+import { InstallPWAPrompt } from '@/components/pwa/InstallPWAPrompt';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -165,6 +166,7 @@ export default function RootLayout() {
                 <Stack.Screen name="+not-found" />
               </Stack>
               <StatusBar style="auto" />
+              <InstallPWAPrompt />
             </ThemeProvider>
           </AppProvider>
         </AuthGate>

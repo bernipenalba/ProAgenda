@@ -243,6 +243,15 @@ export default function PatientProfileScreen() {
   }
 
   const todayStr = getTodayISO();
+
+  // Appointment object that corresponds to the next session shown in the card.
+  // Used to open AppointmentModal in edit mode (pre-filled) instead of create mode.
+  const nextAppt = patient.nextSession
+    ? appointments.find(
+        a => a.patientId === patient.id && `${a.date}T${a.time}:00` === patient.nextSession
+      ) ?? null
+    : null;
+
   const totalPaid = patient.sessions.filter(s => s.paid).reduce((sum, s) => sum + s.amount, 0);
   const totalOwed = patient.sessions.filter(s => s.status !== 'cancelada' && !s.paid && s.date <= todayStr).reduce((sum, s) => sum + s.amount, 0);
   const completedSessions = patient.sessions.filter(s => s.status === 'realizada').length;
@@ -397,7 +406,10 @@ export default function PatientProfileScreen() {
               </Text>
             </View>
             <View style={s.nextCardActions}>
-              <TouchableOpacity style={[s.scheduleBtn, { backgroundColor: c.accent }]} onPress={() => setShowNewAppt(true)} activeOpacity={0.85}>
+              <TouchableOpacity
+                style={[s.scheduleBtn, { backgroundColor: c.accent }]}
+                onPress={() => nextAppt ? setEditingAppt(nextAppt) : setShowNewAppt(true)}
+                activeOpacity={0.85}>
                 <Text style={s.scheduleBtnText}>Reagendar</Text>
               </TouchableOpacity>
               {totalOwed > 0 && (

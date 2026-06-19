@@ -20,7 +20,13 @@
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/favicon.png",
+      "name": "ProAgenda",
+      "shortName": "ProAgenda",
+      "description": "Gestión de turnos y pacientes para profesionales independientes",
+      "themeColor": "#6366F1",
+      "backgroundColor": "#ffffff",
+      "lang": "es"
     },
     "plugins": [
       "expo-router",

@@ -18,6 +18,12 @@ import { DatePicker } from '@/components/ui/DatePicker';
 import { TimePicker } from '@/components/ui/TimePicker';
 import { getTodayISO } from '@/constants/dateUtils';
 import { appointmentSchema } from '@/lib/schemas';
+import {
+  getBlockedStartSlots,
+  findConflict,
+  buildAppointmentInterval,
+  formatTimeHHMM,
+} from '@/lib/appointmentConflicts';
 
 interface Props {
   visible: boolean;
@@ -37,13 +43,6 @@ export function AppointmentModal({ visible, onClose, appointment, defaultPatient
 
   const [patientId, setPatientId] = useState('');
   const [date, setDate] = useState('');
-
-  // Times already taken on the selected date (excluding current appointment when editing)
-  const bookedTimes = useMemo(() => {
-    return appointments
-      .filter(a => a.date === date && a.id !== appointment?.id)
-      .map(a => a.time);
-  }, [appointments, date, appointment?.id]);
   const [time, setTime] = useState('');
   const [duration, setDuration] = useState('50');
   const [modality, setModality] = useState<AppointmentModality>('presencial');
@@ -51,6 +50,13 @@ export function AppointmentModal({ visible, onClose, appointment, defaultPatient
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
+
+  // All HH:MM slots that would conflict with an appointment of `duration` minutes on `date`.
+  // Considers full intervals (not just exact start times) and the 21:00 cutoff.
+  const blockedSlots = useMemo(() => {
+    const dur = parseInt(duration, 10);
+    return getBlockedStartSlots(appointments, date, isNaN(dur) ? 50 : dur, appointment?.id);
+  }, [appointments, date, duration, appointment?.id]);
 
   const selectedPatient = patients.find(p => p.id === patientId);
 
@@ -85,6 +91,28 @@ export function AppointmentModal({ visible, onClose, appointment, defaultPatient
     const result = appointmentSchema.safeParse({ patientId, date, time, duration, modality, amount });
     if (!result.success) {
       setError(result.error.issues[0]?.message ?? 'Verificá los campos e intentá de nuevo.');
+      return;
+    }
+
+    const dur = parseInt(duration, 10);
+
+    // Interval-based overlap check (excludes self when editing).
+    const conflict = findConflict(appointments, date, time, dur, appointment?.id);
+    if (conflict) {
+      const existingDuration = conflict.duration ?? 60;
+      const { start, end } = buildAppointmentInterval(conflict.date, conflict.time, existingDuration);
+      setError(
+        `Ya existe un turno de ${formatTimeHHMM(start)} a ${formatTimeHHMM(end)}. Elegí otro horario o ajustá la duración.`,
+      );
+      return;
+    }
+
+    // 21:00 cutoff check.
+    const [year, month, day] = date.split('-').map(Number);
+    const { end: newEnd } = buildAppointmentInterval(date, time, dur);
+    const cutoff = new Date(year, month - 1, day, 21, 0, 0);
+    if (newEnd > cutoff) {
+      setError('El turno no puede finalizar después de las 21:00.');
       return;
     }
 
@@ -183,38 +211,38 @@ export function AppointmentModal({ visible, onClose, appointment, defaultPatient
               <DatePicker value={date} onChange={setDate} c={c} />
             </View>
 
+            {/* Duration */}
+            <View style={s.fieldWrap}>
+              <Text style={[s.label, { color: c.muted }]}>DURACIÓN (min)</Text>
+              <TextInput
+                style={[s.input, { color: c.text, borderColor: c.border, backgroundColor: c.background }]}
+                value={duration}
+                onChangeText={setDuration}
+                keyboardType="numeric"
+                placeholder="50"
+                placeholderTextColor={c.muted + '66'}
+              />
+            </View>
+
             {/* Time */}
             <View style={s.fieldWrap}>
               <Text style={[s.label, { color: c.muted }]}>
                 HORARIO *{!time && <Text style={{ color: c.danger }}> — seleccioná uno</Text>}
               </Text>
-              <TimePicker value={time} onChange={setTime} c={c} bookedTimes={bookedTimes} />
+              <TimePicker value={time} onChange={setTime} c={c} bookedTimes={blockedSlots} />
             </View>
 
-            {/* Duration + Amount */}
-            <View style={s.row}>
-              <View style={[s.fieldWrap, { flex: 1 }]}>
-                <Text style={[s.label, { color: c.muted }]}>DURACIÓN (min)</Text>
-                <TextInput
-                  style={[s.input, { color: c.text, borderColor: c.border, backgroundColor: c.background }]}
-                  value={duration}
-                  onChangeText={setDuration}
-                  keyboardType="numeric"
-                  placeholder="50"
-                  placeholderTextColor={c.muted + '66'}
-                />
-              </View>
-              <View style={[s.fieldWrap, { flex: 1 }]}>
-                <Text style={[s.label, { color: c.muted }]}>HONORARIO *</Text>
-                <TextInput
-                  style={[s.input, { color: c.text, borderColor: c.border, backgroundColor: c.background }]}
-                  value={amount}
-                  onChangeText={setAmount}
-                  keyboardType="numeric"
-                  placeholder="8000"
-                  placeholderTextColor={c.muted + '66'}
-                />
-              </View>
+            {/* Amount */}
+            <View style={s.fieldWrap}>
+              <Text style={[s.label, { color: c.muted }]}>HONORARIO *</Text>
+              <TextInput
+                style={[s.input, { color: c.text, borderColor: c.border, backgroundColor: c.background }]}
+                value={amount}
+                onChangeText={setAmount}
+                keyboardType="numeric"
+                placeholder="8000"
+                placeholderTextColor={c.muted + '66'}
+              />
             </View>
 
             {/* Modality toggle */}
@@ -283,7 +311,6 @@ const s = StyleSheet.create({
     borderWidth: 1.5, borderRadius: 13,
     paddingHorizontal: 15, paddingVertical: 13, fontSize: 15,
   },
-  row: { flexDirection: 'row', gap: 12 },
   picker: {
     borderWidth: 1.5, borderRadius: 13,
     paddingHorizontal: 15, paddingVertical: 13,
